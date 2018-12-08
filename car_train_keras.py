@@ -1,0 +1,149 @@
+import tensorflow as tf
+from tensorflow import keras
+import tensorflow.contrib.tensorrt as trt
+import os
+
+
+def _read_image(image, value):
+    imgString = tf.read_file(image)
+    image = tf.image.decode_and_crop_jpeg(imgString, crop_window=[47, 80, 66, 200], channels=0)
+    image = tf.image.convert_image_dtype(image, tf.float32)
+    image = image - tf.reduce_mean(input_tensor=image)
+    return image, value
+
+
+def _function_parse(example):
+    feature = {'image': tf.FixedLenFeature([], tf.string),
+               'label': tf.FixedLenFeature([], tf.float32)}
+
+    parsed_features = tf.parse_single_example(example, feature)
+
+    image = tf.decode_raw(parsed_features['image'], tf.uint8)
+    image.set_shape([153600])
+
+    # reshape to the default dataformat
+    image = tf.cast(tf.reshape(image, [160, 320, 3]), dtype=tf.float32)
+
+    image = tf.image.per_image_standardization(image)
+
+    image = tf.transpose(image, perm=[2, 0, 1])
+
+    target = tf.cast(parsed_features['label'], tf.float32)
+
+    return image, target
+
+
+def _function_input(filename, batch_size):
+    dataset = tf.data.TFRecordDataset(filenames=filename)
+
+    dataset = dataset.apply(
+        tf.data.experimental.shuffle_and_repeat(buffer_size=batch_size))
+
+    dataset = dataset.apply(tf.data.experimental.map_and_batch(map_func=_function_parse,
+                                                               batch_size=batch_size, num_parallel_calls=8))
+
+    dataset = dataset.prefetch(buffer_size=1)
+
+    return dataset
+
+
+def _function_input2(filename, batch_size):
+    dataset: tf.data.Dataset = tf.data.experimental.CsvDataset(filenames=filename,
+                                                               record_defaults=[
+                                                                   tf.string, tf.float32],
+                                                               header=True)
+
+    dataset = dataset.apply(tf.data.experimental.map_and_batch(_read_image,
+                                                               batch_size=batch_size,
+                                                               num_parallel_batches=1))
+
+    dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=batch_size))
+
+    dataset = dataset.prefetch(buffer_size=1)
+
+    return dataset
+
+
+def _resnet():
+    model: tf.keras.Model = tf.keras.applications.ResNet50(include_top=False, weights='imagenet',
+                                                           pooling='avg', input_shape=(1, 22, 33, 3))
+
+    model.dtype
+
+    for layer in model.layers:
+        layer.trainable = False
+
+    output_resnet = model.output
+
+    output_model = keras.layers.Dense(
+        units=1, activation='linear')(output_resnet)
+
+    trainingModel = tf.keras.Model(inputs=model.input, outputs=output_model)
+
+    trainingModel.summary()
+
+    earlystop = keras.callbacks.EarlyStopping(
+        monitor='mean_absolute_error', min_delta=0.0001, patience=5, verbose=1)
+    tensorboard = keras.callbacks.TensorBoard(log_dir='logs/')
+
+    trainingModel.compile(loss='mse', optimizer='nadam',
+                          metrics=[keras.losses.mean_absolute_error])
+
+    trainingModel.fit(_function_input2('driving.csv', batch_size=5), epochs=30, steps_per_epoch=1609,
+                      callbacks=[earlystop, tensorboard])
+
+    model.save('e2e.h5')
+
+
+def _normal():
+    model = keras.Sequential([
+        keras.layers.Conv2D(input_shape=(66, 200, 3), filters=24,
+                            kernel_size=5, strides=2,
+                            padding='valid', activation='relu'),
+        keras.layers.Conv2D(filters=36, kernel_size=5, strides=2,
+                            padding='valid', activation='relu'),
+        keras.layers.Conv2D(filters=48, kernel_size=5, strides=2,
+                            padding='valid', activation='relu'),
+        keras.layers.BatchNormalization(fused=True),
+        keras.layers.Conv2D(filters=64, kernel_size=3, strides=1,
+                            padding='valid', activation='relu'),
+        keras.layers.Conv2D(filters=64, kernel_size=3, strides=1,
+                            padding='valid'),
+        keras.layers.BatchNormalization(fused=True),
+        keras.layers.Flatten(),
+        keras.layers.Dense(units=1164, activation='relu'),
+        keras.layers.Dense(units=100, activation='relu'),
+        keras.layers.Dense(units=50, activation='relu'),
+        keras.layers.Dropout(rate=0.1),
+        keras.layers.Dense(units=10, activation='relu'),
+        keras.layers.BatchNormalization(fused=True),
+        keras.layers.Dense(units=1, activation='linear')
+    ])
+
+    if os.path.isfile('e2e.h5'):
+        model.load_weights('e2e.h5')
+
+    model.compile(loss='mse', optimizer=tf.keras.optimizers.Nadam(lr=0.0001, schedule_decay=0.0001),
+                  metrics=[keras.losses.mean_absolute_error])
+
+    model.summary()
+    
+    checkpoint = keras.callbacks.ModelCheckpoint('checkpoints/weights.{epoch:02d}.hdf5',
+                                                 monitor='mean_absolute_error')
+    # earlystop = keras.callbacks.EarlyStopping(
+    #     monitor='mean_absolute_error', min_delta=0.001, patience=5, verbose=1)
+    tensorboard = keras.callbacks.TensorBoard(log_dir='logs/')
+
+    # N total = 8045
+    model.fit(_function_input2('driving.csv', batch_size=2 * 5 * 11),
+              epochs=1000, steps_per_epoch=73, verbose=1, callbacks=[tensorboard, checkpoint])
+
+    model.save_weights('e2e.h5', overwrite=True)
+
+
+def main():
+    _normal()
+
+
+if __name__ == '__main__':
+    main()
