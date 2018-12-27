@@ -1,6 +1,5 @@
 import tensorflow as tf
 from tensorflow import keras
-import tensorflow.contrib.tensorrt as trt
 import os
 
 
@@ -12,45 +11,9 @@ def _read_image(image, value):
     return image, value
 
 
-def _function_parse(example):
-    feature = {'image': tf.FixedLenFeature([], tf.string),
-               'label': tf.FixedLenFeature([], tf.float32)}
-
-    parsed_features = tf.parse_single_example(example, feature)
-
-    image = tf.decode_raw(parsed_features['image'], tf.uint8)
-    image.set_shape([153600])
-
-    # reshape to the default dataformat
-    image = tf.cast(tf.reshape(image, [160, 320, 3]), dtype=tf.float32)
-
-    image = tf.image.per_image_standardization(image)
-
-    image = tf.transpose(image, perm=[2, 0, 1])
-
-    target = tf.cast(parsed_features['label'], tf.float32)
-
-    return image, target
-
-
-def _function_input(filename, batch_size):
-    dataset = tf.data.TFRecordDataset(filenames=filename)
-
-    dataset = dataset.apply(
-        tf.data.experimental.shuffle_and_repeat(buffer_size=batch_size))
-
-    dataset = dataset.apply(tf.data.experimental.map_and_batch(map_func=_function_parse,
-                                                               batch_size=batch_size, num_parallel_calls=8))
-
-    dataset = dataset.prefetch(buffer_size=1)
-
-    return dataset
-
-
 def _function_input2(filename, batch_size):
     dataset: tf.data.Dataset = tf.data.experimental.CsvDataset(filenames=filename,
-                                                               record_defaults=[
-                                                                   tf.string, tf.float32],
+                                                               record_defaults=[tf.string, tf.float32],
                                                                header=True)
 
     dataset = dataset.apply(tf.data.experimental.map_and_batch(_read_image,
@@ -59,16 +22,14 @@ def _function_input2(filename, batch_size):
 
     dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=batch_size))
 
-    dataset = dataset.prefetch(buffer_size=1)
-
     return dataset
 
 
 def _resnet():
-    model: tf.keras.Model = tf.keras.applications.ResNet50(include_top=False, weights='imagenet',
-                                                           pooling='avg', input_shape=(1, 22, 33, 3))
-
-    model.dtype
+    model: tf.keras.Model = tf.keras.applications.ResNet50(include_top=False,
+                                                           weights='imagenet',
+                                                           pooling='avg',
+                                                           input_shape=(1, 22, 33, 3))
 
     for layer in model.layers:
         layer.trainable = False
@@ -89,7 +50,9 @@ def _resnet():
     trainingModel.compile(loss='mse', optimizer='nadam',
                           metrics=[keras.losses.mean_absolute_error])
 
-    trainingModel.fit(_function_input2('driving.csv', batch_size=5), epochs=30, steps_per_epoch=1609,
+    trainingModel.fit(_function_input2('driving.csv', batch_size=5),
+                      epochs=30,
+                      steps_per_epoch=1609,
                       callbacks=[earlystop, tensorboard])
 
     model.save('e2e.h5')
@@ -123,15 +86,21 @@ def _normal():
     if os.path.isfile('e2e.h5'):
         model.load_weights('e2e.h5')
 
-    model.compile(loss='mse', optimizer=tf.keras.optimizers.Nadam(lr=0.0001, schedule_decay=0.0001),
+    model.compile(loss='mse',
+                  optimizer=tf.keras.optimizers.Nadam(lr=0.0001, schedule_decay=0.0001),
                   metrics=[keras.losses.mean_absolute_error])
 
     model.summary()
-    
-    checkpoint = keras.callbacks.ModelCheckpoint('checkpoints/weights.{epoch:02d}.hdf5',
-                                                 monitor='mean_absolute_error')
-    # earlystop = keras.callbacks.EarlyStopping(
-    #     monitor='mean_absolute_error', min_delta=0.001, patience=5, verbose=1)
+
+    checkpoint = keras.callbacks.ModelCheckpoint('checkpoints/weights.hdf5',
+                                                 monitor='val_loss',
+                                                 save_best_only=True)
+
+    earlystop = keras.callbacks.EarlyStopping(monitor='mean_absolute_error',
+                                              min_delta=0.001,
+                                              patience=5,
+                                              verbose=1)
+
     tensorboard = keras.callbacks.TensorBoard(log_dir='logs/')
 
     # N total = 8045
