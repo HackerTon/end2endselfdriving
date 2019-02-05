@@ -1,0 +1,6 @@
+.ipynb_checkpoints
+logs
+savemodel
+dataExploration.ipynb
+*.h5
+*.csv
