@@ -1,13 +1,19 @@
 import tensorflow as tf
-from tensorflow import keras
+import tensorflow.contrib as contrib
+from tensorflow.python import keras
 import os
 
 
 def _read_image(image, value):
     imgString = tf.read_file(image)
+
     image = tf.image.decode_and_crop_jpeg(imgString, crop_window=[47, 80, 66, 200], channels=0)
-    image = tf.image.convert_image_dtype(image, tf.float32)
+
+    # image = tf.image.convert_image_dtype(image, tf.float32)
+    image = tf.cast(image, tf.float32)
+
     image = image - tf.reduce_mean(input_tensor=image)
+
     return image, value
 
 
@@ -83,31 +89,38 @@ def _normal():
         keras.layers.Dense(units=1, activation='linear')
     ])
 
-    if os.path.isfile('e2e.h5'):
-        model.load_weights('e2e.h5')
-
-    model.compile(loss='mse',
-                  optimizer=tf.keras.optimizers.Nadam(lr=0.0001, schedule_decay=0.0001),
-                  metrics=[keras.losses.mean_absolute_error])
+    for node in model.outputs:
+        print(node)
 
     model.summary()
 
-    checkpoint = keras.callbacks.ModelCheckpoint('checkpoints/weights.hdf5',
-                                                 monitor='val_loss',
-                                                 save_best_only=True)
+    savedmodel = contrib.saved_model.save_keras_model(model=model, saved_model_path='./savemodel')
 
-    earlystop = keras.callbacks.EarlyStopping(monitor='mean_absolute_error',
-                                              min_delta=0.001,
-                                              patience=5,
-                                              verbose=1)
-
-    tensorboard = keras.callbacks.TensorBoard(log_dir='logs/')
-
-    # N total = 8045
-    model.fit(_function_input2('driving.csv', batch_size=2 * 5 * 11),
-              epochs=1000, steps_per_epoch=73, verbose=1, callbacks=[tensorboard, checkpoint])
-
-    model.save_weights('e2e.h5', overwrite=True)
+    # if os.path.isfile('e2e.h5'):
+    #     model.load_weights('e2e.h5')
+    #
+    # model.compile(loss='mse',
+    #               optimizer=tf.keras.optimizers.Nadam(lr=0.0001, schedule_decay=0.0001),
+    #               metrics=[keras.losses.mean_absolute_error])
+    #
+    # model.summary()
+    #
+    # checkpoint = keras.callbacks.ModelCheckpoint('checkpoints/weights.hdf5',
+    #                                              monitor='val_loss',
+    #                                              save_best_only=True)
+    #
+    # earlystop = keras.callbacks.EarlyStopping(monitor='mean_absolute_error',
+    #                                           min_delta=0.001,
+    #                                           patience=5,
+    #                                           verbose=1)
+    #
+    # tensorboard = keras.callbacks.TensorBoard(log_dir='logs/')
+    #
+    # # N total = 8045
+    # model.fit(_function_input2('driving.csv', batch_size=2 * 5 * 11),
+    #           epochs=1000, steps_per_epoch=73, verbose=1, callbacks=[tensorboard, checkpoint])
+    #
+    # model.save_weights('e2e.h5', overwrite=True)
 
 
 def main():
